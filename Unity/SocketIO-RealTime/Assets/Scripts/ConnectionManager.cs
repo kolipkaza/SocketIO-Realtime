@@ -12,12 +12,35 @@ public class ConnectionManager : MonoBehaviour
         public List<string> playerIDList = new List<string>();
     }
 
+    [System.Serializable]
+    public class RoomIDGroup
+    {
+        public List<string> roomIDList = new List<string>();
+    }
+
     public class PlayerData
     {
         public string uid;
         public Player playerObj;
         public Vector3 correctPos;
     }
+
+    [System.Serializable]
+    public class PlayerUpdateData
+    {
+        public float x, y, z;
+    }
+
+    public enum ConnectionState
+    {
+        Disconnected,
+        Connected,
+        RoleCreate,
+        RoleJoin,
+        InRoom,
+    }
+
+    public ConnectionState connectionState;
 
     public Player playerObjPref;
 
@@ -27,13 +50,85 @@ public class ConnectionManager : MonoBehaviour
 
     public PlayerIDGroup cachePlayerIDGroup;
 
+    public RoomIDGroup roomIDGroup;
+
     private List<PlayerData> characterList = new List<PlayerData>();
+
+    private PlayerData playerDataOwner;
 
     private SocketIOComponent socket;
 
+    public string roomName;
+
+    private bool isRoom;
+
     private void OnGUI()
     {
-        GUILayout.TextField("OwnerID : " + ownerID);
+        switch(connectionState)
+        {
+            case ConnectionState.Disconnected: 
+            {
+                if (GUILayout.Button("Connect"))
+                {
+                    socket.Connect();
+                }
+                   
+                if(socket.IsConnected)
+                {
+                    connectionState = ConnectionState.Connected;
+                }
+            
+                break;
+            }
+
+            case ConnectionState.Connected:
+            {
+                if(GUILayout.Button("CreateRoom"))
+                {
+                    connectionState = ConnectionState.RoleCreate;
+                }
+
+                if(GUILayout.Button("JoinRoom"))
+                {
+                    connectionState = ConnectionState.RoleJoin;
+                    socket.Emit("OnClientFetchRoomList");
+                }
+                break;
+            }
+
+            case ConnectionState.RoleCreate:
+            {
+                roomName = GUILayout.TextField(roomName);
+                if(GUILayout.Button("CreateRoom"))
+                {
+                    CreateRoom(roomName);
+                }
+                break;
+            }
+
+            case ConnectionState.RoleJoin:
+            {
+                foreach(var _roomName in roomIDGroup.roomIDList)
+                {
+                    if(GUILayout.Button(_roomName))
+                    {
+                        roomName = _roomName;
+                        JoinRoom(_roomName);
+                    }
+                }
+                break;
+            }
+
+            case ConnectionState.InRoom:
+            {
+                GUILayout.TextField(ownerID);
+                if(GUILayout.Button("LeaveRoom"))
+                {
+                    LeaveRoom();
+                }
+                break;
+            }
+        }
     }
 
     // Start is called before the first frame update
@@ -46,6 +141,18 @@ public class ConnectionManager : MonoBehaviour
         socket.On("OnClientFetchPlayerList", OnClientFetchPlayerList);
         socket.On("OnClientDisconnect", OnClientDisconnect);
 
+        socket.On("OnClientCreateRoomSuccess", OnClientCreateRoomSuccess);
+        socket.On("OnClientCreateRoomFail", OnClientCreateRoomFail);
+        socket.On("OnOwnerClientJoinRoomSuccess", OnOwnerClientJoinRoomSuccess);
+        socket.On("OnClientJoinRoomSuccess", OnClientJoinRoomSuccess);
+        socket.On("OnClientJoinRoomFail", OnClientJoinRoomFail);
+
+        socket.On("OnClientLeaveRoom", OnClientLeaveRoom);
+
+        socket.On("OnClientFetchRoomList", OnClientFetchRoomList);
+
+        socket.On("OnClientUpdateMoveList", OnClientUpdateMoveList);
+
         cachePlayerIDGroup = new PlayerIDGroup();
     }
 
@@ -53,6 +160,48 @@ public class ConnectionManager : MonoBehaviour
     void Update()
     {
         DetectPlayerConnect();
+        UpdateAllCharacter();
+    }
+
+    void UpdateAllCharacter()
+    {
+        for(int i = 0; i < characterList.Count; i++)
+        {
+            if (characterList[i].uid == ownerID)
+                continue;
+
+            Vector3 currentPos = characterList[i].playerObj.transform.position;
+            currentPos = Vector3.Lerp(currentPos, characterList[i].correctPos, 5.0f * Time.deltaTime);
+
+            characterList[i].playerObj.transform.position = currentPos;
+        }
+    }
+
+    IEnumerator UpdateOwnerPlayerData()
+    {
+        while(connectionState == ConnectionState.InRoom)
+        {
+            if(playerDataOwner != null && playerDataOwner.playerObj != null)
+            {
+                Dictionary<string, string> data = new Dictionary<string, string>();
+
+                Vector3 playerPos = playerDataOwner.playerObj.transform.position;
+                data.Add("roomName", roomName);
+                data.Add("uid", ownerID);
+                data.Add("x", playerPos.x.ToString());
+                data.Add("y", playerPos.y.ToString());
+                data.Add("z", playerPos.z.ToString());
+
+
+                JSONObject jsonObj = new JSONObject(data);
+
+                socket.Emit("OnClientUpdateMove", jsonObj);
+
+                yield return new WaitForSeconds(0.1f);
+            }
+
+            yield return null;
+        }
     }
 
     private void DetectPlayerConnect()
@@ -92,12 +241,12 @@ public class ConnectionManager : MonoBehaviour
                 {
                     if(checkConnect)//Check player connect
                     {
-                        Debug.Log("Player connected : " + fID);
+                        //Debug.Log("Player connected : " + fID);
                         CreateCharacter(fID);
                     }
                     else//Check player disconnect
                     {
-                        Debug.Log("Player disconnected : " + fID);
+                        //Debug.Log("Player disconnected : " + fID);
                         DestroyCharacter(fID);
                     }
                 }
@@ -119,6 +268,7 @@ public class ConnectionManager : MonoBehaviour
         if (uid == ownerID)
         {
             newPlayerData.playerObj.canControl = true;
+            playerDataOwner = newPlayerData;
         }
 
         characterList.Add(newPlayerData);
@@ -137,26 +287,55 @@ public class ConnectionManager : MonoBehaviour
         }
     }
 
+    public void CreateRoom(string newRoomName)
+    {
+        Dictionary<string, string> data = new Dictionary<string, string>();
+        data.Add("roomName", newRoomName);
+        JSONObject jsonObj = new JSONObject(data);
+ 
+        socket.Emit("OnClientCreateRoom", jsonObj);
+    }
+
+    public void JoinRoom(string newRoomName)
+    {
+        Dictionary<string, string> data = new Dictionary<string, string>();
+        data.Add("roomName", newRoomName);
+        JSONObject jsonObj = new JSONObject(data);
+
+        socket.Emit("OnClientJoinRoom", jsonObj);
+    }
+
+    public void LeaveRoom()
+    {
+        connectionState = ConnectionState.Connected;
+        roomName = "";
+        socket.Emit("OnClientLeaveRoom");
+    }
+
+    private void FetchPlayerList()
+    {
+        Dictionary<string, string> data = new Dictionary<string, string>();
+        data.Add("roomName", roomName);
+        JSONObject jsonObj = new JSONObject(data);
+        socket.Emit("OnClientFetchPlayerList", jsonObj);
+    }
+
     #region Callback Group
     void OnClientConnect(SocketIOEvent evt)
     {
         Debug.Log("OnClientConnect : "+ evt.data.ToString());
-        socket.Emit("OnClientFetchPlayerList");
+        //socket.Emit("OnClientFetchPlayerList");
     }
 
     void OnClientDisconnect(SocketIOEvent evt)
     {
         Debug.Log("OnClientDisconnect : " + evt.data.ToString());
-        socket.Emit("OnClientFetchPlayerList");
+        //socket.Emit("OnClientFetchPlayerList");
     }
 
     void OnOwnerClientConnect(SocketIOEvent evt)
     {
         Debug.Log("OnOwnerClientConnect : " + evt.data.ToString());
-
-        var dictData = evt.data.ToDictionary();
-
-        ownerID = dictData["uid"];
     }
 
     void OnClientFetchPlayerList(SocketIOEvent evt)
@@ -164,6 +343,86 @@ public class ConnectionManager : MonoBehaviour
         Debug.Log("OnClientFetchPlayerList : "+ evt.data.ToString());
 
         playerIDGroup = JsonUtility.FromJson <PlayerIDGroup> (evt.data.ToString());
+    }
+
+    //======================== Room ===========================
+    void OnClientCreateRoomSuccess(SocketIOEvent evt)
+    {
+        Debug.Log("OnClientCreateRoomSuccess : " + evt.data.ToString());
+
+        connectionState = ConnectionState.InRoom;
+
+        var dictData = evt.data.ToDictionary();
+
+        ownerID = dictData["uid"];
+
+        StartCoroutine(UpdateOwnerPlayerData());
+
+        FetchPlayerList();
+    }
+
+    void OnClientCreateRoomFail(SocketIOEvent evt)
+    {
+        Debug.Log("OnClientCreateRoomFail : " + evt.data.ToString());
+    }
+
+    void OnOwnerClientJoinRoomSuccess(SocketIOEvent evt)
+    {
+        Debug.Log("OnOwnerClientJoinRoomSuccess : " + evt.data.ToString());
+
+        connectionState = ConnectionState.InRoom;
+
+        var dictData = evt.data.ToDictionary();
+        
+        ownerID = dictData["uid"];
+
+        StartCoroutine(UpdateOwnerPlayerData());
+
+        FetchPlayerList();
+    }
+
+    void OnClientJoinRoomSuccess(SocketIOEvent evt)
+    {
+        Debug.Log("OnClientJoinRoomSuccess : " + evt.data.ToString());
+
+        FetchPlayerList();
+    }
+
+    void OnClientJoinRoomFail(SocketIOEvent evt)
+    {
+        Debug.Log("OnClientJoinRoomFail : " + evt.data.ToString());
+    }
+
+    void OnClientLeaveRoom(SocketIOEvent evt)
+    {
+        Debug.Log("OnClientLeaveRoom : " + evt.data.ToString());
+
+        FetchPlayerList();
+    }
+
+    void OnClientFetchRoomList(SocketIOEvent evt)
+    {
+        Debug.Log("OnClientFetchRoomList : " + evt.data.ToString());
+
+        roomIDGroup = JsonUtility.FromJson<RoomIDGroup>(evt.data.ToString());
+    }
+
+    void OnClientUpdateMoveList(SocketIOEvent evt)
+    {
+        var dataDict = evt.data.ToDictionary();
+
+        for(int i = 0; i < characterList.Count; i++)
+        {
+            var newPlayerUpdateData = JsonUtility.FromJson<PlayerUpdateData>(dataDict[characterList[i].uid]);
+            Vector3 newPos = new Vector3(newPlayerUpdateData.x, newPlayerUpdateData.y, newPlayerUpdateData.z);
+
+            if(characterList[i].playerObj.transform.position == Vector3.zero)
+            {
+                characterList[i].playerObj.transform.position = newPos;
+            }
+
+            characterList[i].correctPos = newPos;
+        }
     }
     #endregion
 }

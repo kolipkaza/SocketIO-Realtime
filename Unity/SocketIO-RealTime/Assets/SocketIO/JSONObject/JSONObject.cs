@@ -977,6 +977,7 @@ public class JSONObject {
 					case Type.STRING: result.Add(keys[i], val.str); break;
 					case Type.NUMBER: result.Add(keys[i], val.n + ""); break;
 					case Type.BOOL: result.Add(keys[i], val.b + ""); break;
+                    case Type.OBJECT: result.Add(keys[i], val.ToString()); break;
 					default: Debug.LogWarning("Omitting object: " + keys[i] + " in dictionary conversion"); break;
 				}
 			}
